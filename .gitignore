@@ -1,0 +1,9 @@
+*.asi
+*.exe
+*.obj
+*.lib
+*.exp
+*.log
+*.zip
+*.nativecodeanalysis.xml
+winmm.dll
