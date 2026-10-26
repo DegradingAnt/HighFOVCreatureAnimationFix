@@ -13,27 +13,31 @@
 #pragma comment(lib, "bcrypt.lib")
 
 namespace {
-constexpr uintptr_t kContextRva = 0x1209798;
+// Pinned build: NMS 7.06, Steam build 180836. Every value below was read from
+// that NMS.exe; a different executable is declined before any write.
+constexpr uintptr_t kContextRva = 0x12137e8;
 constexpr size_t kOpcodeOffset = 12;
 constexpr DWORD kPathCapacity = 32768;
 constexpr std::array<unsigned char, 32> kOriginal = {
     0x84,0xc0,0x75,0x1c,0x41,0xf6,0x85,0x5a,0x11,0,0,0x20,0x75,0x12,
-    0x49,0x8b,0x8d,0x40,0x04,0,0,0x8b,0x89,0xe0,0x19,0,0,0xe8,0x18,0x0a,0x63,0
+    0x49,0x8b,0x8d,0x40,0x04,0,0,0x8b,0x89,0xe0,0x19,0,0,0xe8,0x98,0x37,0x63,0
 };
 constexpr unsigned char kSha256[] = {
-    0xb7,0x91,0x3f,0x26,0x8d,0xfc,0x62,0x38,0x6b,0x6b,0x68,0xf5,0x24,0xbf,0xc8,0xad,
-    0xe4,0xa4,0x4a,0x9f,0x4f,0xba,0xd3,0x90,0x85,0xb7,0xbf,0x51,0xbe,0x36,0x80,0xcb
+    0x13,0xd5,0x06,0x0d,0x4e,0xfb,0x9d,0x2a,0x6a,0x6b,0x1b,0x34,0x9b,0xc4,0x25,0x72,
+    0x31,0x05,0x6c,0xc2,0xa0,0x55,0xdf,0x4b,0xb1,0x5d,0x81,0x62,0x62,0xcc,0x34,0x99
 };
+// The PE fields of the same executable: TimeDateStamp, SizeOfImage, AddressOfEntryPoint.
+constexpr DWORD kPeTimeDateStamp = 0x6abe9229, kPeSizeOfImage = 0x771d000, kPeEntryPoint = 0x76e3310;
 // The native non-VR on-foot and flight sliders share this maximum load.
 // Retarget its RIP-relative operand from the existing 120.0f constant to
 // the existing 200.0f constant. Do not modify either shared constant.
-constexpr uintptr_t kFovRva = 0x6df320;
-constexpr uintptr_t kFovMinRva = 0x4b19f84;
-constexpr uintptr_t kFovOldMaxRva = 0x4b19fe4;
-constexpr uintptr_t kFovMaxRva = 0x4b1a048;
+constexpr uintptr_t kFovRva = 0x6e4fc0;
+constexpr uintptr_t kFovMinRva = 0x4b29d64;
+constexpr uintptr_t kFovOldMaxRva = 0x4b29dc4;
+constexpr uintptr_t kFovMaxRva = 0x4b29e28;
 constexpr std::array<unsigned char,64> kFovOriginal = {
-    0xf3,0x44,0x0f,0x10,0x05,0xbb,0xac,0x43,0x04,0x4c,0x8d,0x05,0xe0,0xd9,0x37,0x04,
-    0xf3,0x0f,0x10,0x3d,0x4c,0xac,0x43,0x04,0x48,0x8d,0x15,0xf1,0xd9,0x37,0x04,0xf3,
+    0xf3,0x44,0x0f,0x10,0x05,0xfb,0x4d,0x44,0x04,0x4c,0x8d,0x05,0x78,0x7f,0x38,0x04,
+    0xf3,0x0f,0x10,0x3d,0x8c,0x4d,0x44,0x04,0x48,0x8d,0x15,0xe9,0x80,0x38,0x04,0xf3,
     0x41,0x0f,0x10,0x9d,0xb4,0,0,0,0x45,0x33,0xff,0xf3,0x45,0x0f,0x10,0x95,
     0xac,0,0,0,0x48,0x8b,0xce,0xf3,0x44,0x0f,0x10,0x4d,0x0c,0x48,0x89,0x44
 };
@@ -81,6 +85,16 @@ void Log(const char* message) {
         }
     }
     InterlockedExchange(&gLogStatus,static_cast<LONG>(error));
+}
+
+// The APPLIED line names the patched opcode's RVA from the pinned constants,
+// so the text cannot go stale when the pins move to a new build.
+std::array<char,128> AnimationAppliedMessage() {
+    std::array<char,128> message{};
+    sprintf_s(message.data(),message.size(),
+        "APPLIED: creature visibility animation suppression bypass, RVA 0x%llX, 75 -> EB.",
+        static_cast<unsigned long long>(kContextRva+kOpcodeOffset));
+    return message;
 }
 
 bool SupportedFile(const wchar_t* path) {
@@ -179,7 +193,7 @@ DWORD WINAPI Worker(void*) {
     if(!n || n>=kPathCapacity) {InterlockedExchange(&gFovStatus,3);InterlockedExchange(&gStatus,3);return 0;}
     const wchar_t* name=wcsrchr(exe.get(),L'\\');
     if(!name || _wcsicmp(name+1,L"NMS.exe")!=0 || !SupportedFile(exe.get())) {
-        Log("DECLINED: executable is not the supported NMS build 179666. No change made.");
+        Log("DECLINED: executable is not the supported NMS build 180836. No change made.");
         InterlockedExchange(&gFovStatus,3);InterlockedExchange(&gStatus,3);return 0;
     }
     auto base=reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
@@ -190,16 +204,18 @@ DWORD WINAPI Worker(void*) {
     }
     auto pe=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
     if(pe->Signature!=IMAGE_NT_SIGNATURE ||
-       pe->FileHeader.TimeDateStamp!=0x6ab0ffc9 || pe->OptionalHeader.SizeOfImage!=0x760a000 ||
-       pe->OptionalHeader.AddressOfEntryPoint!=0x75d0310) {
+       pe->FileHeader.TimeDateStamp!=kPeTimeDateStamp || pe->OptionalHeader.SizeOfImage!=kPeSizeOfImage ||
+       pe->OptionalHeader.AddressOfEntryPoint!=kPeEntryPoint) {
         Log("DECLINED: loaded PE fingerprint differs. No change made.");
         InterlockedExchange(&gFovStatus,3);InterlockedExchange(&gStatus,3);return 0;
     }
     Result result=Apply(base+kContextRva);
     switch(result) {
-        case Result::Applied:
-            Log("APPLIED: creature visibility animation suppression bypass, RVA 0x12097A4, 75 -> EB.");
+        case Result::Applied: {
+            const auto message=AnimationAppliedMessage();
+            Log(message.data());
             InterlockedExchange(&gStatus,1);break;
+        }
         case Result::Already:
             Log("ACTIVE: the identical creature animation workaround was already applied.");
             InterlockedExchange(&gStatus,2);break;
@@ -260,12 +276,19 @@ BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID) {
 
 #ifdef PATCH_TEST
 int TestFov() {
-    // Sparse image-shaped allocation: commit only the instruction page and
-    // the two pages containing constants. Exercise the production RVA math.
-    auto base=static_cast<unsigned char*>(VirtualAlloc(nullptr,0x4b1b000,MEM_RESERVE,PAGE_NOACCESS));
+    // Sparse image-shaped allocation: commit only the instruction page(s) and
+    // the page(s) containing constants. Exercise the production RVA math.
+    constexpr size_t pageSize=4096;
+    static_assert(kFovRva+64<=kFovMinRva && kFovMinRva<kFovOldMaxRva && kFovOldMaxRva<kFovMaxRva,
+                  "the test image layout expects code below the three constants");
+    constexpr size_t imageSize=(kFovMaxRva+sizeof(float)+pageSize-1)&~(pageSize-1);
+    constexpr size_t codeFirst=kFovRva&~(pageSize-1);
+    constexpr size_t codeSize=((kFovRva+64+pageSize-1)&~(pageSize-1))-codeFirst;
+    constexpr size_t constantsFirst=kFovMinRva&~(pageSize-1);
+    auto base=static_cast<unsigned char*>(VirtualAlloc(nullptr,imageSize,MEM_RESERVE,PAGE_NOACCESS));
     if(!base)return 20;
-    if(!VirtualAlloc(base+0x6df000,4096,MEM_COMMIT,PAGE_READWRITE) ||
-       !VirtualAlloc(base+0x4b19000,8192,MEM_COMMIT,PAGE_READWRITE))return 21;
+    if(!VirtualAlloc(base+codeFirst,codeSize,MEM_COMMIT,PAGE_READWRITE) ||
+       !VirtualAlloc(base+constantsFirst,imageSize-constantsFirst,MEM_COMMIT,PAGE_READWRITE))return 21;
     auto context=base+kFovRva;
     memcpy(context,kFovOriginal.data(),kFovOriginal.size());
     float minimum=60.0f,oldMaximum=120.0f,maximum=200.0f;
@@ -280,7 +303,7 @@ int TestFov() {
     for(size_t i=0;i<kFovOriginal.size();++i) {
         if(i!=5 && i!=6 && context[i]!=kFovOriginal[i])return 25;
     }
-    if(context[5]!=0x1f || context[6]!=0xad)return 26;
+    if(context[5]!=0x5f || context[6]!=0x4e)return 26;
     MEMORY_BASIC_INFORMATION mbi{};
     if(!VirtualQuery(context,&mbi,sizeof(mbi)) || mbi.Protect!=PAGE_EXECUTE_READ)return 27;
     // Shared constants must remain untouched.
@@ -300,12 +323,72 @@ int TestFov() {
     return 0;
 }
 
+bool ReadFileAt(HANDLE file,uint64_t offset,void* buffer,DWORD size) {
+    LARGE_INTEGER at{}; at.QuadPart=static_cast<LONGLONG>(offset);
+    DWORD got{};
+    return SetFilePointerEx(file,at,nullptr,FILE_BEGIN) && ReadFile(file,buffer,size,&got,nullptr) && got==size;
+}
+
+// The pins against the executable file itself (argv[1], already hash-checked): the PE fields
+// the loaded-image guard compares, both instruction windows and the three slider constants are
+// in the file at the pinned RVAs, and the slider instruction's operands decode to those constants.
+int TestPinsInFile(const wchar_t* path) {
+    HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+                            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return 40;
+    IMAGE_DOS_HEADER dos{}; IMAGE_NT_HEADERS64 nt{};
+    IMAGE_SECTION_HEADER sections[96]{};
+    int result=0;
+    if(!ReadFileAt(file,0,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE || dos.e_lfanew<0 || dos.e_lfanew>4096 ||
+       !ReadFileAt(file,static_cast<uint64_t>(dos.e_lfanew),&nt,sizeof(nt)) || nt.Signature!=IMAGE_NT_SIGNATURE)result=41;
+    else if(nt.FileHeader.TimeDateStamp!=kPeTimeDateStamp || nt.OptionalHeader.SizeOfImage!=kPeSizeOfImage ||
+            nt.OptionalHeader.AddressOfEntryPoint!=kPeEntryPoint)result=42;
+    const WORD count=nt.FileHeader.NumberOfSections;
+    const uint64_t sectionsAt=static_cast<uint64_t>(dos.e_lfanew)+FIELD_OFFSET(IMAGE_NT_HEADERS64,OptionalHeader)+
+                              nt.FileHeader.SizeOfOptionalHeader;
+    if(!result && (count==0 || count>_countof(sections) ||
+       !ReadFileAt(file,sectionsAt,sections,static_cast<DWORD>(count*sizeof(IMAGE_SECTION_HEADER)))))result=43;
+    // Reads `size` bytes at an RVA through the section table, as the loader maps them.
+    auto readRva=[&](uintptr_t rva,void* buffer,DWORD size) {
+        for(WORD i=0;i<count;++i) {
+            const IMAGE_SECTION_HEADER& s=sections[i];
+            if(rva>=s.VirtualAddress && rva+size<=static_cast<uintptr_t>(s.VirtualAddress)+s.SizeOfRawData)
+                return ReadFileAt(file,static_cast<uint64_t>(s.PointerToRawData)+(rva-s.VirtualAddress),buffer,size);
+        }
+        return false;
+    };
+    std::array<unsigned char,32> animation{};
+    std::array<unsigned char,64> slider{};
+    float minimum{},oldMaximum{},maximum{};
+    if(!result && (!readRva(kContextRva,animation.data(),32) || animation!=kOriginal))result=44;
+    if(!result && (!readRva(kFovRva,slider.data(),64) || slider!=kFovOriginal))result=45;
+    if(!result && (!readRva(kFovMinRva,&minimum,4) || !readRva(kFovOldMaxRva,&oldMaximum,4) ||
+                   !readRva(kFovMaxRva,&maximum,4) || minimum!=60.0f || oldMaximum!=120.0f || maximum!=200.0f))result=46;
+    if(!result) {
+        // movss xmm8,[rip+disp] at +0 loads the maximum; movss xmm7,[rip+disp] at +16 loads the minimum.
+        int32_t maxDisp{},minDisp{};
+        memcpy(&maxDisp,kFovOriginal.data()+5,4);
+        memcpy(&minDisp,kFovOriginal.data()+20,4);
+        if(kFovRva+9+maxDisp!=kFovOldMaxRva || kFovRva+24+minDisp!=kFovMinRva)result=47;
+    }
+    CloseHandle(file);
+    return result;
+}
+
 int wmain(int argc,wchar_t** argv) {
+    const auto appliedMessage=AnimationAppliedMessage();
+    if(strcmp(appliedMessage.data(),
+        "APPLIED: creature visibility animation suppression bypass, RVA 0x12137F4, 75 -> EB.")!=0) {
+        printf("FAIL: guarded branch diagnostic: %s\n",appliedMessage.data());
+        return 33;
+    }
     if(argc!=2 || !SupportedFile(argv[1])) {puts("FAIL: supported executable SHA256");return 1;}
+    const int pins=TestPinsInFile(argv[1]);
+    if(pins) {printf("FAIL: pins in the executable file %d\n",pins);return pins;}
     wchar_t self[32768]{}; GetModuleFileNameW(nullptr,self,_countof(self));
     if(SupportedFile(self)) {puts("FAIL: unsupported executable accepted");return 2;}
     unsigned char fixture[]={0x84,0xc0,0x75,0x1c,0x41,0xf6,0x85,0x5a,0x11,0,0,0x20,
-        0x75,0x12,0x49,0x8b,0x8d,0x40,0x04,0,0,0x8b,0x89,0xe0,0x19,0,0,0xe8,0x18,0x0a,0x63,0};
+        0x75,0x12,0x49,0x8b,0x8d,0x40,0x04,0,0,0x8b,0x89,0xe0,0x19,0,0,0xe8,0x98,0x37,0x63,0};
     auto page=static_cast<unsigned char*>(VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
     if(!page)return 3;
     memcpy(page,fixture,sizeof(fixture));DWORD prior{};
@@ -326,6 +409,7 @@ int wmain(int argc,wchar_t** argv) {
     if(GetFixStatus()!=3 || GetFovStatus()!=3 || GetLogStatus()!=0)return 8;
     puts("PASS: full executable hash guard, unsupported-host refusal, exact signature, single-byte write, idempotence, protection restore, foreign-code refusal.");
     puts("PASS: FOV operand destination, exact changed bytes, unchanged shared constants, idempotence, protection restore, altered-constant and conflicting-hook refusal.");
+    puts("PASS: build 180836 pins in the executable file: PE fields, 32-byte and 64-byte windows, constants 60/120/200, decoded slider operands; APPLIED line names RVA 0x12137F4.");
     return 0;
 }
 #endif
